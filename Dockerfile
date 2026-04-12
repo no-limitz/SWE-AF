@@ -45,6 +45,15 @@ RUN uv pip install --system -r /app/requirements.txt
 # Copy application code
 COPY . /app/
 
+# Patch agentfield opencode provider for opencode CLI v1.4+ compatibility.
+# The upstream package uses `-p`/`-c` flags that no longer exist; the correct
+# syntax is `opencode run --dir <path> -m <model> --dangerously-skip-permissions`.
+RUN cp /app/patches/opencode_provider.py \
+    $(python -c "import agentfield.harness.providers.opencode as m; import os; print(os.path.abspath(m.__file__))")
+
+# Ensure /workspaces exists and is writable (Docker named volume will mount here)
+RUN mkdir -p /workspaces && chmod 777 /workspaces
+
 EXPOSE 8003
 
 ENV PORT=8003 \
