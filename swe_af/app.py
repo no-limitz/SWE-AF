@@ -22,6 +22,7 @@ from swe_af.reasoners.pipeline import _assign_sequence_numbers, _compute_levels,
 from swe_af.reasoners.schemas import PlanResult, ReviewResult
 
 from agentfield import Agent
+from agentfield.async_config import AsyncConfig
 from swe_af.execution.envelope import unwrap_call_result as _unwrap
 from swe_af.execution.schemas import (
     BuildConfig,
@@ -40,6 +41,10 @@ app = Agent(
     description="Autonomous SWE planning pipeline",
     agentfield_server=os.getenv("AGENTFIELD_SERVER", "http://localhost:8080"),
     api_key=os.getenv("AGENTFIELD_API_KEY"),
+    async_config=AsyncConfig(
+        default_execution_timeout=21600.0,  # 6 hours
+        max_execution_timeout=21600.0,
+    ),
 )
 
 app.include_router(router)
