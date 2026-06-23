@@ -11,6 +11,8 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import shutil
+import subprocess
 
 from dotenv import load_dotenv
 
@@ -55,6 +57,54 @@ def _runtime_to_provider(runtime: str) -> str:
     return "opencode"
 
 
+def _normalize_repo_url(url: str) -> str:
+    """Expand owner/name shorthand to a full GitHub HTTPS URL."""
+    if url.startswith("http://") or url.startswith("https://") or url.startswith("git@"):
+        return url
+    # bare owner/name — assume GitHub
+    if re.match(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", url):
+        return f"https://github.com/{url}"
+    return url
+
+
+async def _clone_if_needed(repo_path: str, repo_url: str) -> None:
+    """Clone repo_url into repo_path if repo_path is not already a valid clone.
+
+    A valid clone is defined as a directory that has .git/config with an
+    [remote "origin"] entry.  If the workspace exists but has no remote (e.g.
+    was created by a previous run via ``git init``), it is wiped first so the
+    real codebase can be cloned fresh.
+    """
+    def _has_origin() -> bool:
+        result = subprocess.run(
+            ["git", "-C", repo_path, "remote", "get-url", "origin"],
+            capture_output=True, text=True,
+        )
+        return result.returncode == 0 and bool(result.stdout.strip())
+
+    if os.path.exists(os.path.join(repo_path, ".git")):
+        has_remote = await asyncio.to_thread(_has_origin)
+        if has_remote:
+            return  # already a proper clone — nothing to do
+        # .git exists but no remote: previous run left a local-only workspace
+        await asyncio.to_thread(lambda: shutil.rmtree(repo_path, ignore_errors=True))
+
+    os.makedirs(repo_path, exist_ok=True)
+    full_url = _normalize_repo_url(repo_url)
+
+    def _clone() -> subprocess.CompletedProcess:  # type: ignore[type-arg]
+        return subprocess.run(
+            ["git", "clone", full_url, repo_path],
+            capture_output=True, text=True,
+        )
+
+    proc = await asyncio.to_thread(_clone)
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"git clone {full_url!r} failed (exit {proc.returncode}): {proc.stderr.strip()}"
+        )
+
+
 @app.reasoner()
 async def build(
     goal: str,
@@ -86,6 +136,21 @@ async def build(
     resolved = fast_resolve_models(cfg)
     ai_provider = _runtime_to_provider(cfg.runtime)
     abs_artifacts_dir = os.path.join(os.path.abspath(repo_path), artifacts_dir)
+
+    # ── 0. CLONE (if repo_url provided and workspace is not already a clone) ─
+    if effective_repo_url:
+        app.note(
+            f"Fast build: ensuring workspace is a clone of {effective_repo_url}",
+            tags=["fast_build", "clone"],
+        )
+        try:
+            await _clone_if_needed(repo_path, effective_repo_url)
+            app.note("Fast build: clone ready", tags=["fast_build", "clone", "complete"])
+        except Exception as e:
+            app.note(
+                f"Fast build: clone failed (continuing without clone): {e}",
+                tags=["fast_build", "clone", "error"],
+            )
 
     # ── 1. GIT INIT (1 attempt, non-fatal) ─────────────────────────────────
     app.note("Fast build: git init", tags=["fast_build", "git_init"])
